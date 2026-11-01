@@ -412,3 +412,7 @@ def main():
         print("Website stopped.")
     finally:
         server.server_close()
+
+
+if __name__ == "__main__":
+    main()
