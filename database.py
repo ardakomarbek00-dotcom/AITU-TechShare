@@ -187,3 +187,32 @@ def items_by_owner(user_id):
                                      price_per_day, status FROM Items
                               WHERE owner_id = ? ORDER BY item_id DESC""",
                             (user_id,)).fetchall()
+
+
+def admin_data():
+    """Return all Users, Items, and RentalRequests for the admin panel."""
+    with closing(connect()) as conn:
+        users = conn.execute(
+            "SELECT user_id, first_name, last_name, email FROM Users ORDER BY user_id DESC"
+        ).fetchall()
+        items = conn.execute("""
+            SELECT i.*, u.email AS owner_email
+            FROM Items i JOIN Users u ON u.user_id = i.owner_id
+            ORDER BY i.item_id DESC
+        """).fetchall()
+        requests = conn.execute("""
+            SELECT r.*, i.title, u.email AS borrower_email
+            FROM RentalRequests r
+            JOIN Items i ON i.item_id = r.item_id
+            JOIN Users u ON u.user_id = r.borrower_id
+            ORDER BY r.request_id DESC
+        """).fetchall()
+        return users, items, requests
+
+
+def delete_item(item_id):
+    """Delete an item and its rental requests without breaking foreign keys."""
+    with closing(connect()) as conn:
+        conn.execute("DELETE FROM RentalRequests WHERE item_id = ?", (item_id,))
+        conn.execute("DELETE FROM Items WHERE item_id = ?", (item_id,))
+        conn.commit()

@@ -14,11 +14,12 @@ import mimetypes
 import secrets
 import threading
 import webbrowser
-import os 
+import os
 
 import database as db
 
 HOST = "0.0.0.0"
+ADMIN_EMAIL = "admin@astanait.edu.kz"
 STATIC = Path(__file__).resolve().parent / "static"
 SESSIONS = {}  # In-memory sessions for a LOCAL STUDENT DEMO, not for production.
 IMAGE_BY_CATEGORY = {
@@ -31,6 +32,11 @@ IMAGE_BY_CATEGORY = {
 def text(value):
     """HTML-escape everything supplied by a user or database."""
     return escape(str(value), quote=True)
+
+
+def is_admin(user):
+    """Check if the logged-in user is the administrator."""
+    return bool(user and user["email"].lower() == ADMIN_EMAIL)
 
 
 def verify_password(password, stored):
@@ -55,9 +61,11 @@ def hash_password(password):
 
 def layout(title, content, user=None, message=""):
     if user:
+        admin_link = '<a href="/admin">Admin</a>' if is_admin(user) else ''
         links = (f'<a href="/#add">Add equipment</a>'
                  '<a href="/requests">Requests</a>'
                  '<a href="/my-equipment">My equipment</a>'
+                 f'{admin_link}'
                  f'<span class="account">{text(user["first_name"])}</span>'
                  '<form action="/logout" method="post"><button class="nav-logout">Log out</button></form>')
     else:
@@ -240,6 +248,61 @@ def my_equipment_page(user):
             f'but not your private records.</p>{table}'
             f'<p><a class="button inline-button" href="/#add">Add another item</a></p></section>')
 
+
+def admin_page():
+    """Display all database tables and delete controls for admin@astanait.edu.kz."""
+    users, items, requests = db.admin_data()
+
+    item_rows = ''.join(
+        f'<tr><td>{int(i["item_id"])}</td><td>{text(i["title"])}</td>'
+        f'<td>{text(i["category"])}</td><td>{text(i["owner_email"])}</td>'
+        f'<td>{float(i["price_per_day"]):,.0f} ₸</td><td>{text(i["status"])}</td>'
+        f'<td><form method="post" action="/delete-item">'
+        f'<input type="hidden" name="item_id" value="{int(i["item_id"])}">'
+        f'<button class="button small secondary" type="submit">Delete</button>'
+        f'</form></td></tr>'
+        for i in items
+    )
+    items_table = (
+        '<div class="table-wrap"><table><thead><tr>'
+        '<th>ID</th><th>Title</th><th>Category</th><th>Owner</th>'
+        '<th>Price</th><th>Status</th><th>Action</th></tr></thead><tbody>'
+        + item_rows + '</tbody></table></div>'
+    ) if items else '<p class="muted">No items in database.</p>'
+
+    user_rows = ''.join(
+        f'<tr><td>{int(u["user_id"])}</td><td>{text(u["first_name"])} {text(u["last_name"])}</td>'
+        f'<td>{text(u["email"])}</td></tr>'
+        for u in users
+    )
+    users_table = (
+        '<div class="table-wrap"><table><thead><tr>'
+        '<th>ID</th><th>Name</th><th>Email</th></tr></thead><tbody>'
+        + user_rows + '</tbody></table></div>'
+    ) if users else '<p class="muted">No users registered.</p>'
+
+    req_rows = ''.join(
+        f'<tr><td>{int(r["request_id"])}</td><td>{text(r["title"])}</td>'
+        f'<td>{text(r["borrower_email"])}</td><td>{text(r["request_kind"])}</td>'
+        f'<td>{text(r["start_date"])} → {text(r["end_date"])}</td>'
+        f'<td>{text(r["status"])}</td></tr>'
+        for r in requests
+    )
+    requests_table = (
+        '<div class="table-wrap"><table><thead><tr>'
+        '<th>ID</th><th>Item</th><th>Borrower</th><th>Type</th>'
+        '<th>Period</th><th>Status</th></tr></thead><tbody>'
+        + req_rows + '</tbody></table></div>'
+    ) if requests else '<p class="muted">No rental requests.</p>'
+
+    return (f'<section class="panel wide"><a href="/" class="back">← Catalog</a>'
+            f'<h1 class="page-heading">Admin Panel</h1>'
+            f'<p class="muted">Full database overview for {ADMIN_EMAIL}.</p>'
+            f'<h2>All Equipment (Items)</h2>{items_table}'
+            f'<h2>All Students (Users)</h2>{users_table}'
+            f'<h2>All Requests (RentalRequests)</h2>{requests_table}</section>')
+
+
 class Site(BaseHTTPRequestHandler):
     def log_message(self, format, *args):
         print('[TechShare]', format % args)
@@ -295,6 +358,7 @@ class Site(BaseHTTPRequestHandler):
         user = self.current_user()
         messages = {
             'saved': 'Equipment saved to SQLite. The new listing appears first in the catalog.',
+            'deleted': 'Equipment deleted from SQLite by administrator.',
             'loggedin': 'Welcome back! You can add equipment and send requests.',
             'request': 'Your request was saved in the RentalRequests table.',
             'accepted': 'Request status updated in SQLite.',
@@ -316,6 +380,8 @@ class Site(BaseHTTPRequestHandler):
             return self.send_page('Requests', requests_page(user), user, notice)
         if url.path == '/my-equipment' and user:
             return self.send_page('My equipment', my_equipment_page(user), user, notice)
+        if url.path == '/admin' and is_admin(user):
+            return self.send_page('Admin panel', admin_page(), user, notice)
         self.send_page('Not found', '<section class="panel wide">Page not found. <a href="/">Go home</a>.</section>', user, status=404)
 
     def form(self):
@@ -396,10 +462,19 @@ class Site(BaseHTTPRequestHandler):
                 return self.go('/requests?msg=owner')
             error = db.decide_request(user['user_id'], request_id, decision)
             return self.go('/requests?msg=owner' if error else '/requests?msg=accepted')
+        if route == '/delete-item' and is_admin(user):
+            try:
+                db.delete_item(int(val('item_id')))
+            except ValueError:
+                pass
+            return self.go('/admin?msg=deleted')
         self.send_error(404)
+
 
 def main():
     db.initialize_database()
+    if not db.find_user(ADMIN_EMAIL):
+        db.create_user("Admin", "AITU", ADMIN_EMAIL, hash_password("admin12345"))
     port = int(os.environ.get("PORT", 8765))
     server = ThreadingHTTPServer((HOST, port), Site)
     url = f"http://{HOST}:{port}"
